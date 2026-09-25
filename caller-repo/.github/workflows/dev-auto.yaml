@@ -1,0 +1,23 @@
+## set your secrets either at organizational level (preferred) or at repository level of your caller repo
+name: Dev Deployment
+ 
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - feature-dev-workflow
+    types: ['closed']
+    
+  push:
+    branches:
+      - feature-dev-workflow
+jobs:
+  build:
+    uses: Senam-Kudjo/my-fully-automated-github-action-reusable-workflows/central-workflow-repo/.github/workflows/aks-dev-pipeline.yaml@test
+    with:
+      image_name: ${{ github.event.repository.name }}
+    secrets: inherit
+   
+ 
+ 
+ 
