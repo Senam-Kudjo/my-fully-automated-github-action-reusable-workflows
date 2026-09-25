@@ -1,0 +1,260 @@
+ # some stages were commented out because the initial runner were the pipeline was running on already some of the tools
+ # and access configured on it hence the commenting. for example it had helm already installed, azure account access and kubectl.
+
+name: EKS Dev Cluster
+  
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        required: true
+        type: string
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/<branch_name>'
+    runs-on: nextgen-dev
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure Container Registry
+        run: |
+          echo "${{ secrets.DEV_ACR_PASSWORD }}" | docker login \
+            "${{ secrets.DEV_ACR_LOGIN_SERVER }}" \
+            --username "${{ secrets.DEV_ACR_USERNAME }}" \
+            --password-stdin
+            
+      # - name: Download dependencies
+      #   run: go mod download
+
+      # - name: Build Go application
+      #   run: go build -v ./...
+
+      # - name: Run Go tests
+      #   run: go test ./...
+ 
+      - name: Build Docker image
+        run: docker build -t ${{ secrets.DEV_ACR_LOGIN_SERVER }}/${{ inputs.image_name }}:${{ github.run_number }} .
+
+      - name: Push Docker image
+        run: docker push ${{ secrets.DEV_ACR_LOGIN_SERVER }}/${{ inputs.image_name }}:${{ github.run_number }}
+ 
+  
+  # verify:
+  #   needs: build
+  #   runs-on: nextgen-dev
+  #   steps:
+      # - name: Set AKS context
+      #   uses: azure/aks-set-context@v4
+      #   with:
+      #     resource-group: ${{ secrets.DEV_AKS_RESOURCE_GROUP }}
+      #     cluster-name: ${{ secrets.DEV_AKS_CLUSTER_NAME }}
+
+      # - name: Get AKS credentials
+      #   run: |
+      #     az aks get-credentials \
+      #       --resource-group ${{ secrets.DEV_AKS_RESOURCE_GROUP }} \
+      #       --name ${{ secrets.DEV_AKS_CLUSTER_NAME }} \
+      #       --overwrite-existing
+ 
+      # - name: Set up Helm
+      #   uses: azure/setup-helm@v4
+      #   with:
+      #     version: v3.15.0   # <-- pin to whatever version you use
+
+  deploy:
+    needs: build
+    runs-on: nextgen-dev
+    steps:
+ 
+      - name: Verify Image Being Deployed 
+        run: echo ${{ secrets.DEV_ACR_LOGIN_SERVER }}/${{ inputs.image_name }}:${{ github.run_number }}
+ 
+      - name: Helm upgrade
+        run: |
+          helm upgrade ${{ github.event.repository.name }} ./manifest/${{ inputs.image_name }} \
+            --install \
+            --namespace ${{ secrets.DEV_HELM_NAMESPACE }} \
+            --create-namespace \
+            -f ./manifest/${{ inputs.image_name }}/values.yaml \
+            --set image.repository=${{ secrets.DEV_ACR_LOGIN_SERVER }}/${{ inputs.image_name }} \
+            --set image.tag=${{ github.run_number }} \
+            --wait \
+            --timeout 2m
+  
+      # - name: Verify rollout
+      #   run: |
+      #     kubectl rollout status deployment/${{ inputs.image_name }} \
+      #       -n ${{ secrets.DEV_HELM_NAMESPACE }} --timeout=120s
+
+  deployment:
+    if: ${{ always() }}
+    needs:
+      - build
+      - deploy
+    runs-on: nextgen-dev
+  
+    steps:
+      - name: Determine deployment status
+        id: status
+        shell: bash
+        run: |
+          if [[ "${{ needs.build.result }}" == "failure" ]]; then
+            echo "status=FAILED" >> "$GITHUB_OUTPUT"
+            echo "failed_stage=Build" >> "$GITHUB_OUTPUT"
+  
+          elif [[ "${{ needs.deploy.result }}" == "failure" ]]; then
+            echo "status=FAILED" >> "$GITHUB_OUTPUT"
+            echo "failed_stage=Deployment" >> "$GITHUB_OUTPUT"
+  
+          elif [[ "${{ needs.build.result }}" == "cancelled" || "${{ needs.deploy.result }}" == "cancelled" ]]; then
+            echo "status=CANCELLED" >> "$GITHUB_OUTPUT"
+            echo "failed_stage=None" >> "$GITHUB_OUTPUT"
+  
+          else
+            echo "status=SUCCESS" >> "$GITHUB_OUTPUT"
+            echo "failed_stage=None" >> "$GITHUB_OUTPUT"
+          fi
+  
+      - name: Send deployment notification
+        shell: bash
+        env:
+          WEBHOOK_URL: ${{ secrets.MS_WEBHOOK_URL }}
+          STATUS: ${{ steps.status.outputs.status }}
+          FAILED_STAGE: ${{ steps.status.outputs.failed_stage }}
+          IMAGE_NAME: ${{ inputs.image_name }}
+          IMAGE_TAG: ${{ github.run_number }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  
+        run: |
+          echo "========================================="
+          echo "Sending deployment notification..."
+          echo "========================================="
+  
+          if [[ -z "$WEBHOOK_URL" ]]; then
+            echo "❌ ERROR: MS_WEBHOOK_URL is empty"
+            exit 1
+          fi
+  
+          if [[ "$STATUS" == "SUCCESS" ]]; then
+            TITLE="✅ Deployment Successful"
+            MESSAGE="Deployment completed successfully."
+          elif [[ "$STATUS" == "CANCELLED" ]]; then
+            TITLE="⚠️ Deployment Cancelled"
+            MESSAGE="Deployment was cancelled."
+          else
+            TITLE="❌ Deployment Failed"
+            MESSAGE="Deployment failed during: $FAILED_STAGE"
+          fi
+  
+          # Create Adaptive Card payload
+          PAYLOAD=$(cat <<EOF
+          {
+            "type": "message",
+            "attachments": [
+              {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                  "type": "AdaptiveCard",
+                  "version": "1.5",
+                  "body": [
+                    {
+                      "type": "TextBlock",
+                      "text": "$TITLE - Dev Cluster",
+                      "weight": "Bolder",
+                      "size": "Large",
+                      "wrap": true
+                    },
+                    {
+                      "type": "TextBlock",
+                      "text": "$MESSAGE",
+                      "wrap": true
+                    },
+                    {
+                      "type": "FactSet",
+                      "facts": [
+                        {
+                          "title": "Repository",
+                          "value": "$REPOSITORY"
+                        },
+                        {
+                          "title": "Branch",
+                          "value": "$BRANCH"
+                        },
+                        {
+                          "title": "Image",
+                          "value": "$IMAGE_NAME:$IMAGE_TAG"
+                        },
+                        {
+                          "title": "Status",
+                          "value": "$STATUS"
+                        },
+                        {
+                          "title": "Failed Stage",
+                          "value": "$FAILED_STAGE"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "ActionSet",
+                      "actions": [
+                        {
+                          "type": "Action.OpenUrl",
+                          "title": "View GitHub Actions Run",
+                          "url": "$RUN_URL"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+          EOF
+          )
+  
+          echo "Payload generated successfully."
+  
+          # Optional: print payload for debugging
+          echo "$PAYLOAD"
+  
+          RESPONSE_FILE=$(mktemp)
+  
+          HTTP_STATUS=$(curl \
+            --location \
+            --silent \
+            --show-error \
+            --output "$RESPONSE_FILE" \
+            --write-out "%{http_code}" \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --data "$PAYLOAD" \
+            "$WEBHOOK_URL")
+  
+          CURL_EXIT_CODE=$?
+  
+          echo "Curl exit code: $CURL_EXIT_CODE"
+          echo "HTTP status code: $HTTP_STATUS"
+          echo "Response body:"
+          cat "$RESPONSE_FILE"
+          echo ""
+  
+          if [[ "$CURL_EXIT_CODE" -ne 0 ]]; then
+            echo "❌ CURL FAILED"
+            rm -f "$RESPONSE_FILE"
+            exit "$CURL_EXIT_CODE"
+          fi
+  
+          if [[ "$HTTP_STATUS" -ge 200 && "$HTTP_STATUS" -lt 300 ]]; then
+            echo "✅ WEBHOOK REQUEST SUCCEEDED"
+          else
+            echo "❌ WEBHOOK REQUEST FAILED"
+            rm -f "$RESPONSE_FILE"
+            exit 1
+          fi
+  
+          rm -f "$RESPONSE_FILE"
