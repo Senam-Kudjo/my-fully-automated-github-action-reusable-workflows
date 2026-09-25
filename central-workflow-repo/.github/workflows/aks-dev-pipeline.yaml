@@ -1,5 +1,5 @@
- # some stages were commented out because the initial runner were the pipeline was running on already some of the tools
- # and access configured on it hence the commenting. for example it had helm already installed, azure account access and kubectl.
+ # some stages were commented out because the reusable pipeline implementation was tested on a self hosted runner that already some of the tools and access 
+ ## installed and/or configured on it hence the commenting.  for example it had helm already installed, azure account access and kubectl.
 
  ## don't forget to insert branch name in line 17
 
@@ -14,7 +14,7 @@ on:
 
 jobs:
   build:
-    if: github.ref == 'refs/heads/<branch_name>'
+    if: github.ref == 'refs/heads/<insert_branch_name>'
     runs-on: nextgen-dev
 
     steps:
