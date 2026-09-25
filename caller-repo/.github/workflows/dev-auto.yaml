@@ -1,4 +1,6 @@
 ## set your secrets either at organizational level (preferred) or at repository level of your caller repo
+# don't forget to insert branch name at line 17
+
 name: Dev Deployment
  
 on:
@@ -13,7 +15,7 @@ on:
       - feature-dev-workflow
 jobs:
   build:
-    uses: Senam-Kudjo/my-fully-automated-github-action-reusable-workflows/central-workflow-repo/.github/workflows/aks-dev-pipeline.yaml@test
+    uses: Senam-Kudjo/my-fully-automated-github-action-reusable-workflows/central-workflow-repo/.github/workflows/aks-dev-pipeline.yaml@<insert_branch_name>
     with:
       image_name: ${{ github.event.repository.name }}
     secrets: inherit
